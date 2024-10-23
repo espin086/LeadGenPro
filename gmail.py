@@ -1,3 +1,9 @@
+"""Technical set up is here for sending email with gmail:
+
+https://www.youtube.com/watch?v=g_j6ILT-X0k
+
+"""
+
 from dotenv import load_dotenv
 import os
 from email.message import EmailMessage
