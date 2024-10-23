@@ -6,6 +6,7 @@ import time
 import random
 import pandas as pd
 import argparse
+import csv
 
 logging.basicConfig(level=logging.INFO)
 
@@ -124,15 +125,37 @@ def process_urls_for_contact_info(urls):
             emails = extract_emails_from_content(content)
             phone_numbers = extract_phone_numbers_from_content(content)
             
+            # Ensure that emails and phone numbers are enclosed in double quotes
+            formatted_emails = f'"{", ".join(emails)}"' if emails else "No email found"
+            formatted_phone_numbers = f'"{", ".join(phone_numbers)}"' if phone_numbers else "No phone number found"
+            
             # Store the results
             results.append({
                 "URL": url,
-                "Emails": ', '.join(emails) if emails else "No email found",
-                "Phone Numbers": ', '.join(phone_numbers) if phone_numbers else "No phone number found"
+                "Emails": formatted_emails,
+                "Phone Numbers": formatted_phone_numbers
             })
     
     return results
 
+def save_to_csv(data, query, location):
+    """
+    Save the extracted contact information (emails and phone numbers) to a CSV file.
+    """
+    # Convert the list of dictionaries to a DataFrame
+    df = pd.DataFrame(data)
+    
+    # Clean the query and location strings
+    cleaned_query = sanitize_string(query)
+    cleaned_location = sanitize_string(location)
+    
+    # Define the CSV file name
+    csv_file = f"{cleaned_query}_{cleaned_location}_contact_info.csv"
+    
+    # Save the DataFrame to a CSV file, ensuring proper encoding and quoting
+    df.to_csv(csv_file, index=False, quoting=csv.QUOTE_MINIMAL)
+    
+    print(f"Data has been saved to {csv_file}")
 
 def truncate_url(url):
     """
@@ -264,18 +287,8 @@ def main(query, location, results):
     logging.info(f"Number of URLs processed for contact info: {len(contact_info)}")
     logging.info(contact_info)
 
-    # Create a DataFrame from the list of dictionaries
-    df = pd.DataFrame(contact_info)
-
-    # Clean the query and location strings before using them for the filename
-    cleaned_query = sanitize_string(query)
-    cleaned_location = sanitize_string(location)
-
-    # Save the DataFrame to a CSV file with the cleaned query and location
-    csv_file = f"{cleaned_query}_{cleaned_location}_contact_info.csv"
-    df.to_csv(csv_file, index=False)
-
-    print(f"Data has been saved to {csv_file}")
+    # Save to CSV
+    save_to_csv(contact_info, query, location)
 
 
 if __name__ == "__main__":
