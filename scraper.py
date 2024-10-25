@@ -129,7 +129,7 @@ def save_to_csv(data, query, location):
     df = pd.DataFrame(data)
     cleaned_query = sanitize_string(query)
     cleaned_location = sanitize_string(location)
-    csv_file = f"{cleaned_query}_{cleaned_location}_contact_info.csv"
+    csv_file = f"data/{cleaned_query}_{cleaned_location}_contact_info.csv"
     df.to_csv(csv_file, index=False, quoting=csv.QUOTE_MINIMAL)
     print(f"Data has been saved to {csv_file}")
 
