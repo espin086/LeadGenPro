@@ -7,6 +7,7 @@ import random
 import pandas as pd
 import argparse
 import csv
+import os
 
 logging.basicConfig(level=logging.INFO)
 
@@ -130,6 +131,12 @@ def save_to_csv(data, query, location):
     cleaned_query = sanitize_string(query)
     cleaned_location = sanitize_string(location)
     csv_file = f"data/{cleaned_query}_{cleaned_location}_contact_info.csv"
+    
+    # Check if the "data" folder exists, if not, create it
+    if not os.path.exists("data"):
+        logging.info("Creating a new 'data' folder")
+        os.makedirs("data")
+    
     df.to_csv(csv_file, index=False, quoting=csv.QUOTE_MINIMAL)
     print(f"Data has been saved to {csv_file}")
 
