@@ -1,41 +1,24 @@
+"""
+Core scraper functionality for LeadGenPro
+"""
 import re
 import time
 import random
 import logging
-import os
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, HttpUrl, validator
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("leadgenpro")
-
-# Create FastAPI app
-app = FastAPI(
-    title="LeadGenPro",
-    description="A professional Lead Generation Tool that extracts contact information from websites",
-    version="1.0.0",
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Create data directory if not exists
 data_dir = Path("data")
@@ -50,40 +33,12 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:68.0) Gecko/20100101 Firefox/68.0'
 ]
 
-# Pydantic Models
-class ScrapeRequest(BaseModel):
-    query: str = Field(..., min_length=1, description="Search query term")
-    location: str = Field(..., min_length=1, description="Location to search for")
-    results: int = Field(..., ge=10, le=100, description="Number of results to scrape (must be a multiple of 10)")
-    
-    @validator('results')
-    def validate_results(cls, v):
-        if v % 10 != 0:
-            raise ValueError('Results must be a multiple of 10')
-        return v
-
 class ContactInfo(BaseModel):
     url: str
     emails: List[str] = []
     phone_numbers: List[str] = []
     all_text: Optional[str] = None
 
-class ScrapeResponse(BaseModel):
-    job_id: str
-    status: str
-    message: str
-
-class ScrapeResult(BaseModel):
-    query: str
-    location: str
-    results: int
-    contact_info: List[ContactInfo]
-    file_path: Optional[str] = None
-
-# In-memory job storage (replace with a database in production)
-scrape_jobs: Dict[str, Dict[str, Any]] = {}
-
-# Service Functions
 def scrape_google_search(query: str, location: str, start: int = 0) -> Optional[str]:
     """
     Scrape Google search results for a given query and location.
@@ -91,19 +46,33 @@ def scrape_google_search(query: str, location: str, start: int = 0) -> Optional[
     query = query.strip().replace(' ', '+')
     location = location.strip().replace(' ', '+')
 
-    url = f'https://www.google.com/search?q={query}+{location}&start={start}'
+    url = f'https://www.google.com/search?q={query}+{location}&start={start}&num=10'
 
     headers = {
         'User-Agent': random.choice(USER_AGENTS),
-        'Referer': 'https://www.google.com/'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.google.com/',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
     }
 
     try:
         response = requests.get(url, headers=headers, timeout=30)
+        logger.info(f"Google search status code: {response.status_code}")
+        
         if response.status_code == 200:
+            # Log the URLs found in response headers to debug any redirects
+            if response.history:
+                for resp in response.history:
+                    logger.info(f"Redirect: {resp.url} -> {resp.headers.get('Location')}")
+            
             return response.text
         elif response.status_code == 403:
             logger.warning(f"Error 403: Forbidden - Access denied for {url}")
+            logger.warning("Google may be blocking the request. Try changing the User-Agent or using a proxy.")
         else:
             logger.warning(f"Failed to retrieve the page. Status code: {response.status_code}")
     except requests.exceptions.Timeout:
@@ -161,33 +130,56 @@ def process_urls_for_contact_info(urls: List[str]) -> List[ContactInfo]:
     """Process a list of URLs and extract contact information."""
     results = []
     
-    for url in urls:
-        sleep_delay = random.uniform(2, 4)
-        logger.info(f"Sleeping for {sleep_delay:.2f} seconds")
-        time.sleep(sleep_delay)  # Sleep for 2-4 seconds to avoid rate limiting
-        
-        logger.info(f"Processing URL: {url}")
-        
-        content = get_page_content(url)
-        
-        if content:
-            emails = extract_emails_from_content(content)
-            phone_numbers = extract_phone_numbers_from_content(content)
-            all_text = extract_all_text(content)
+    if not urls:
+        logger.warning("No URLs provided to process for contact info")
+        return results
+    
+    for i, url in enumerate(urls):
+        try:
+            logger.info(f"Processing URL {i+1}/{len(urls)}: {url}")
             
-            results.append(ContactInfo(
-                url=url,
-                emails=emails,
-                phone_numbers=phone_numbers,
-                all_text=all_text
-            ))
+            sleep_delay = random.uniform(2, 4)
+            logger.info(f"Sleeping for {sleep_delay:.2f} seconds before processing {url}")
+            time.sleep(sleep_delay)  # Sleep for 2-4 seconds to avoid rate limiting
+            
+            content = get_page_content(url)
+            
+            if content:
+                logger.info(f"Successfully retrieved content from {url} (length: {len(content)} chars)")
+                emails = extract_emails_from_content(content)
+                logger.info(f"Found {len(emails)} emails on {url}: {emails}")
+                
+                phone_numbers = extract_phone_numbers_from_content(content)
+                logger.info(f"Found {len(phone_numbers)} phone numbers on {url}: {phone_numbers}")
+                
+                all_text = extract_all_text(content)
+                text_preview = all_text[:100] + "..." if all_text and len(all_text) > 100 else all_text
+                logger.info(f"Extracted text preview from {url}: {text_preview}")
+                
+                results.append(ContactInfo(
+                    url=url,
+                    emails=emails,
+                    phone_numbers=phone_numbers,
+                    all_text=all_text
+                ))
+            else:
+                logger.warning(f"Failed to retrieve content from {url}")
+        except Exception as e:
+            logger.error(f"Error processing URL {url}: {e}")
+            # Continue with the next URL rather than failing the entire process
+            continue
     
     return results
 
 def extract_urls(text: str) -> List[str]:
     """Extract URLs from text."""
-    url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+    # More comprehensive URL pattern
+    url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[/\w\.-]*(?:\?\S*)?'
     urls = set(re.findall(url_pattern, text))
+    
+    # Add additional logging
+    logger.info(f"Raw URLs extracted: {urls}")
+    
     return list(urls)
 
 def clean_urls(urls: List[str]) -> List[str]:
@@ -197,6 +189,8 @@ def clean_urls(urls: List[str]) -> List[str]:
         fixed_url = fix_malformed_url(url)
         if fixed_url not in cleaned_urls:
             cleaned_urls.append(fixed_url)
+    
+    logger.info(f"Cleaned URLs: {cleaned_urls}")
     return cleaned_urls
 
 def fix_malformed_url(url: str) -> str:
@@ -212,7 +206,18 @@ def fix_malformed_url(url: str) -> str:
 
 def filter_urls(urls: List[str], exclude_terms: List[str]) -> List[str]:
     """Filter out URLs containing excluded terms."""
+    # Log before filtering
+    logger.info(f"Filtering URLs with exclude terms: {exclude_terms}")
+    
+    # Track which URLs get filtered and why
+    for url in urls:
+        for term in exclude_terms:
+            if term in url:
+                logger.info(f"Excluding URL {url} because it contains term: {term}")
+    
     filtered_urls = [url for url in urls if not any(term in url for term in exclude_terms)]
+    logger.info(f"After exclude filtering: {filtered_urls}")
+    
     truncated_urls = [truncate_url(url) for url in filtered_urls]
     return truncated_urls
 
@@ -258,14 +263,15 @@ async def scrape_and_process(
     job_id: str,
     query: str,
     location: str,
-    results: int
+    results: int,
+    jobs_dict: Dict[str, Dict[str, Any]]
 ) -> None:
     """
     Background task to scrape Google and process the results.
     """
     try:
         # Update job status
-        scrape_jobs[job_id]["status"] = "processing"
+        jobs_dict[job_id]["status"] = "processing"
         
         all_results = ""
         
@@ -276,6 +282,8 @@ async def scrape_and_process(
             
             if result:
                 all_results += result
+                # Log a small sample of the raw HTML to help debug
+                logger.debug(f"Sample of raw HTML: {result[:500]}...")
             else:
                 logger.warning(f"Failed to retrieve results for start={i}")
 
@@ -288,7 +296,9 @@ async def scrape_and_process(
         logger.info(f"Number of URLs extracted: {len(result_urls)}")
         
         cleaned_urls = clean_urls(result_urls)
-        exclude_terms = ['google', 'gstatic', 'usnews']
+        
+        # Use a more targeted exclude list
+        exclude_terms = ['google.com/search', 'gstatic.com', 'google.com/imgres']
         filtered_urls = filter_urls(cleaned_urls, exclude_terms)
         logger.info(f"Number of filtered URLs: {len(filtered_urls)}")
 
@@ -299,8 +309,11 @@ async def scrape_and_process(
         # Save results to CSV
         file_path = save_to_csv(contact_info, query, location)
         
+        # Import here to avoid circular imports
+        from leadgenpro.api import ScrapeResult
+        
         # Update job with results
-        scrape_jobs[job_id].update({
+        jobs_dict[job_id].update({
             "status": "completed",
             "result": ScrapeResult(
                 query=query,
@@ -313,122 +326,7 @@ async def scrape_and_process(
         
     except Exception as e:
         logger.error(f"Error in background task: {e}")
-        scrape_jobs[job_id].update({
+        jobs_dict[job_id].update({
             "status": "failed",
             "error": str(e)
-        })
-
-# API Endpoints
-@app.get("/", tags=["Health"])
-async def root():
-    """Health check endpoint."""
-    return {"status": "healthy", "message": "LeadGenPro API is running"}
-
-@app.post("/scrape", response_model=ScrapeResponse, status_code=status.HTTP_202_ACCEPTED, tags=["Scraping"])
-async def scrape_leads(
-    background_tasks: BackgroundTasks,
-    request: ScrapeRequest
-):
-    """
-    Start a scraping job to extract contact information based on search query and location.
-    
-    This is an asynchronous operation that will return immediately with a job ID.
-    You can check the status of the job using the /jobs/{job_id} endpoint.
-    """
-    job_id = f"{sanitize_string(request.query)}_{sanitize_string(request.location)}_{int(time.time())}"
-    
-    # Initialize job
-    scrape_jobs[job_id] = {
-        "status": "queued",
-        "query": request.query,
-        "location": request.location,
-        "results": request.results,
-        "created_at": time.time()
-    }
-    
-    # Add task to background
-    background_tasks.add_task(
-        scrape_and_process,
-        job_id=job_id,
-        query=request.query,
-        location=request.location,
-        results=request.results
-    )
-    
-    return ScrapeResponse(
-        job_id=job_id,
-        status="queued",
-        message="Scraping job has been queued and will be processed in the background"
-    )
-
-@app.get("/jobs/{job_id}", tags=["Jobs"])
-async def get_job_status(job_id: str):
-    """Get the status of a scraping job."""
-    if job_id not in scrape_jobs:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    
-    job = scrape_jobs[job_id]
-    
-    response = {
-        "job_id": job_id,
-        "status": job["status"],
-        "query": job["query"],
-        "location": job["location"],
-        "created_at": job["created_at"]
-    }
-    
-    if job["status"] == "completed":
-        response["result"] = job["result"]
-    elif job["status"] == "failed":
-        response["error"] = job["error"]
-    
-    return response
-
-@app.get("/download/{job_id}", tags=["Download"])
-async def download_results(job_id: str):
-    """Download the CSV file for a completed job."""
-    if job_id not in scrape_jobs:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    
-    job = scrape_jobs[job_id]
-    
-    if job["status"] != "completed":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Job {job_id} is not completed. Current status: {job['status']}"
-        )
-    
-    file_path = job["result"].file_path
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"CSV file not found")
-    
-    return FileResponse(
-        path=file_path, 
-        filename=os.path.basename(file_path),
-        media_type="text/csv"
-    )
-
-@app.get("/jobs", tags=["Jobs"])
-async def list_jobs(
-    status: Optional[str] = Query(None, enum=["queued", "processing", "completed", "failed"])
-):
-    """List all jobs, optionally filtered by status."""
-    if not scrape_jobs:
-        return {"jobs": []}
-    
-    jobs = []
-    for job_id, job in scrape_jobs.items():
-        if status is None or job["status"] == status:
-            jobs.append({
-                "job_id": job_id,
-                "status": job["status"],
-                "query": job["query"],
-                "location": job["location"],
-                "created_at": job["created_at"]
-            })
-    
-    return {"jobs": jobs}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("scraper:app", host="0.0.0.0", port=8000, reload=True)
+        }) 
